@@ -1,0 +1,190 @@
+﻿Program.Sub.Preflight.Start
+V.Global.sError.Declare(String)
+V.Global.sJob.Declare(String)
+V.Global.sSuffix.Declare(String)
+	
+Program.External.Include.Library("2003.lib")
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Author: Arturo Almaguer
+'Date: 14 April 2022
+'Customer: Western Container, quote number 13256
+'This program opens up the Multi-Part WIP to FG screen if certain criteria is met
+'This script is triggered from hook 
+
+Function.Intrinsic.UI.UsePixels ' Allows you to use Pixels instead of Twips throughout
+
+F.Intrinsic.Control.Try
+
+	F.Intrinsic.Control.SelectCase(V.Caller.Hook)
+		
+		V.Local.sCaption.Declare(String)
+		
+		F.Intrinsic.Control.Case(15710)
+		'GUI populate hook - Changing Script 1 button caption
+			V.Passed.000016.Set("WIP MP")
+			
+		F.Intrinsic.Control.Case(15760)
+		'GUI Script 1 button hook
+			F.Intrinsic.Control.CallSub("CheckTable")
+			F.Intrinsic.Control.CallSub("WIPtoFG")
+		
+		F.Intrinsic.Control.Case(15890)
+		'GUI Post process hook
+			V.Global.sJob.Set(V.Passed.009990)
+			V.Global.sSuffix.Set(V.Passed.009991)
+			F.Intrinsic.Control.CallSub("CheckTable")
+			F.Intrinsic.Control.CallSub("SaveWO")
+		
+		F.Intrinsic.Control.Case(49710)
+		'SFDC populate hook - Changing Script 1 button caption
+			V.Local.sCaption.Set(Variable.Passed.MainFormView-windowsUIButtonPanel-1)
+			f.Intrinsic.String.Replace(V.Local.sCaption, "Script 1", "WIP MP", V.Local.sCaption)
+			Variable.Passed.MainFormView-windowsUIButtonPanel-1.Set(V.Local.sCaption)
+			
+		F.Intrinsic.Control.Case(49760)
+		'SFDC Script 1 button hook
+			F.Intrinsic.Control.CallSub("CheckTable")
+			F.Intrinsic.Control.CallSub("WIPtoFG")
+		
+		F.Intrinsic.Control.Case(50630)
+		'SFDC Post process hook
+			F.Intrinsic.Control.CallSub("CheckTable")
+			F.Intrinsic.Control.CallSub("GetData")
+			F.Intrinsic.Control.CallSub("SaveWO")
+
+	F.Intrinsic.Control.EndSelect
+	
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+Program.Sub.Unload.Start
+'Closes the connection if it is open
+f.Intrinsic.Control.If(v.ODBC.con.exists,=,"1") 	
+    f.ODBC.Connection!Con.Close
+f.Intrinsic.Control.EndIf
+
+'Ending program
+F.Intrinsic.Control.End
+Program.Sub.Unload.End
+Program.Sub.CatchError.Start
+'To display the error
+F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}", V.Ambient.ScriptPath, V.Ambient.Newline, V.Ambient.SubroutineCalledFrom, V.Ambient.ErrorNumber, V.Ambient.ErrorDescription, V.Ambient.GABVersion, V.Global.sError) 
+F.Intrinsic.UI.Msgbox(V.Global.sError)
+F.Intrinsic.Control.CallSub("Unload")
+Program.Sub.CatchError.End
+Program.Sub.GetData.Start
+'This subroutine reads the SFDC BDF to retrieve the selected WO
+
+F.Intrinsic.Control.Try
+
+	V.Local.sBDF.Declare(String)
+	
+	f.Intrinsic.BDF.Load("UpdateWObdf","UpdateJobsView-gvWOOperations-bdf")
+	f.Intrinsic.BDF.ReadRow("UpdateWObdf",0,v.Local.sBDF)
+	f.Intrinsic.String.Split(v.Local.sBDF,"|~|",v.Local.sBDF)
+
+	f.Intrinsic.String.Split(v.Local.sBDF(0),"-",v.Local.sBDF)
+	v.Global.sJob.Set(v.Local.sBDF(0).Trim)
+	v.Global.sSuffix.Set(v.Local.sBDF(1).Trim)
+	
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.GetData.End
+Program.Sub.WIPtoFG.Start
+'This subroutine opens up the multi-part WO WIP to FG screen
+
+F.Intrinsic.Control.Try
+
+	V.Local.sSQL.Declare(String)
+	V.Local.sWO.Declare(String)
+
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.ExecuteAndReturn("select * from GCG_6698_WO", V.Local.sWO)
+	F.Intrinsic.String.Split(V.Local.sWO, "*!*", V.Local.sWO)
+	v.Global.sJob.Set(V.Local.sWO(0))
+	v.Global.sSuffix.Set(V.Local.sWO(1))
+	
+	'Validating whether WO is a multi-part WO
+	f.Intrinsic.String.Build("select WO from V_JOB_MULT_PARTS_LN where WO = '{0}' and WO_SUFFIX = '{1}'", V.Global.sJob, V.Global.sSuffix, v.Local.sSQL)
+	f.ODBC.Connection!Con.ExecuteAndReturn(v.Local.sSQL,v.Local.sSQL)
+	
+	F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, True)
+		'Ending program because WO is not a multi-part one
+		F.Intrinsic.Control.CallSub("Unload")
+	F.Intrinsic.Control.EndIf
+	
+	'If WO is multi part, then multi-part WIP to FG screen
+	
+	'Adding rows to 2003 library's dts
+	F.Data.DataTable.AddRow("2003File","WONum", V.Global.sJob, "WOSuffix", V.Global.sSuffix)
+	F.Data.DataTable.AddRow("2003","Mode", "OS", "WONum", V.Global.sJob, "WOSuffix", V.Global.sSuffix)
+			
+	'Calling callwrapper 2003 to open multi-part WIP to FG screen
+	F.Intrinsic.Control.CallSub("2003Sync")
+	
+	F.ODBC.Connection!Con.Close
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.WIPtoFG.End
+Program.Sub.CheckTable.Start
+'This subroutine verifies if tables exists in DB, creates it if it doesn't
+F.Intrinsic.Control.Try
+
+	V.Local.bExists.Declare(Boolean)
+	
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.TableExists("GCG_6698_WO", V.Local.bExists)
+		F.Intrinsic.Control.If(V.Local.bExists, =, False)
+			F.ODBC.Connection!Con.Execute("CREATE TABLE GCG_6698_WO (JOB CHAR(6), SUFFIX CHAR(3));")
+		F.Intrinsic.Control.EndIf
+	F.ODBC.Connection!Con.Close
+
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.CheckTable.End
+Program.Sub.SaveWO.Start
+'This subroutine saves the data in the custom table
+
+F.Intrinsic.Control.Try
+
+	V.Local.sSQL.Declare(String)
+
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.ExecuteAndReturn("select * from GCG_6698_WO", V.Local.sSQL)
+
+	F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, True)
+		F.Intrinsic.String.Build("insert into GCG_6698_WO(JOB, SUFFIX) values('{0}','{1}');", V.Global.sJob, V.Global.sSuffix, V.Local.sSQL)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.String.Build("update GCG_6698_WO set JOB = '{0}', SUFFIX = '{1}';", V.Global.sJob, V.Global.sSuffix, V.Local.sSQL)
+	F.Intrinsic.Control.EndIf
+	
+	'Executing SQL query
+	F.ODBC.Connection!Con.Execute(V.Local.sSQL)
+	F.ODBC.Connection!Con.Close
+	
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.SaveWO.End
+
+Program.Sub.Comments.Start
+${$5$}$3.0.0.0$}$1
+${$6$}$apadilla$}$20220519123251290$}$Lag9STqBJOmNXSbd5+msRcBWPGz0aFqSzPePUG9qWbzl7Z9k28ZcL95NCZZhDpDTPIZfxnducWt3Oa11WhAtUQ==
+Program.Sub.Comments.End
